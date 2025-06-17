@@ -21,20 +21,25 @@ def process_audio(wav_file, model_name="base.en"):
     if not os.path.exists(wav_file):
         raise FileNotFoundError(f"WAV file not found: {wav_file}")
 
-    full_command = f"./main -m {model} -f {wav_file} -nt"
+    binary = None
+    if os.path.exists("./build/bin/whisper-cli"):
+        binary = "./build/bin/whisper-cli"
+    elif os.path.exists("./whisper-cli"):
+        binary = "./whisper-cli"
+    else:
+        binary = "./main"
 
-    # Execute the command
-    process = subprocess.Popen(full_command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    cmd = [binary, "-m", model, "-f", wav_file, "-nt"]
 
-    # Get the output and error (if any)
-    output, error = process.communicate()
+    process = subprocess.run(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+    )
 
-    if error:
-        raise Exception(f"Error processing audio: {error.decode('utf-8')}")
+    if process.returncode != 0:
+        raise Exception(f"Error processing audio: {process.stderr.strip()}")
 
-    # Process and return the output string
-    decoded_str = output.decode('utf-8').strip()
-    processed_str = decoded_str.replace('[BLANK_AUDIO]', '').strip()
+    decoded_str = process.stdout.strip()
+    processed_str = decoded_str.replace("[BLANK_AUDIO]", "").strip()
 
     return processed_str
 
