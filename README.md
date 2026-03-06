@@ -125,6 +125,12 @@ make -j large-v2
 make -j large-v3
 make -j large-v3-turbo
 ```
+You can also download models shared on Google Drive using the helper script:
+
+```bash
+./scripts/gdrive-download.sh <file_id> /path/to/model.bin
+```
+
 
 ## Memory usage
 
