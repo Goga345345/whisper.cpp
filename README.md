@@ -131,6 +131,16 @@ You can also download models shared on Google Drive using the helper script:
 ./scripts/gdrive-download.sh <file_id> /path/to/model.bin
 ```
 
+For Drive folder cleanup workflows (for example, finding old `familyhub` folders and removing empty placeholders), use:
+
+```bash
+# Dry run: find empty folders with names containing "familyhub"
+GDRIVE_ACCESS_TOKEN=<oauth_token> ./scripts/gdrive-folder-cleanup.sh --name familyhub --empty-only
+
+# Trash the matched folders
+GDRIVE_ACCESS_TOKEN=<oauth_token> ./scripts/gdrive-folder-cleanup.sh --name familyhub --empty-only --delete
+```
+
 
 ## Memory usage
 
