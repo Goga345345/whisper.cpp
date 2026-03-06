@@ -9,6 +9,7 @@
 #include <vector>
 #include <cmath>
 #include <cstdint>
+#include <cfloat>
 
 struct whisper_params {
     int32_t n_threads    = std::min(4, (int32_t) std::thread::hardware_concurrency());
@@ -38,6 +39,7 @@ struct whisper_params {
     bool print_progress = false;
     bool no_timestamps  = false;
     bool no_prints      = false;
+    bool detect_language= false;
     bool use_gpu        = true;
     bool flash_attn     = false;
     bool comma_in_time  = true;
@@ -50,6 +52,16 @@ struct whisper_params {
     std::vector<std::string> fname_out = {};
 
     std::vector<float> pcmf32 = {}; // mono-channel F32 PCM
+
+    // Voice Activity Detection (VAD) parameters
+    bool        vad           = false;
+    std::string vad_model     = "";
+    float       vad_threshold = 0.5f;
+    int         vad_min_speech_duration_ms = 250;
+    int         vad_min_silence_duration_ms = 100;
+    float       vad_max_speech_duration_s = FLT_MAX;
+    int         vad_speech_pad_ms = 30;
+    float       vad_samples_overlap = 0.1f;
 };
 
 struct whisper_print_user_data {
@@ -82,7 +94,7 @@ void whisper_print_segment_callback(struct whisper_context * ctx, struct whisper
             t1 = whisper_full_get_segment_t1(ctx, i);
         }
 
-        if (!params.no_timestamps) {
+        if (!params.no_timestamps && !params.no_prints) {
             printf("[%s --> %s]  ", to_timestamp(t0).c_str(), to_timestamp(t1).c_str());
         }
 
@@ -113,12 +125,14 @@ void whisper_print_segment_callback(struct whisper_context * ctx, struct whisper
 
         // colorful print bug
         //
-        const char * text = whisper_full_get_segment_text(ctx, i);
-        printf("%s%s", speaker.c_str(), text);
+        if (!params.no_prints) {
+            const char * text = whisper_full_get_segment_text(ctx, i);
+            printf("%s%s", speaker.c_str(), text);
+        }
 
 
         // with timestamps or speakers: each segment on new line
-        if (!params.no_timestamps || params.diarize) {
+        if ((!params.no_timestamps || params.diarize) && !params.no_prints) {
             printf("\n");
         }
 
@@ -127,6 +141,11 @@ void whisper_print_segment_callback(struct whisper_context * ctx, struct whisper
 }
 
 void cb_log_disable(enum ggml_log_level, const char *, void *) {}
+
+struct whisper_result {
+    std::vector<std::vector<std::string>> segments;
+    std::string language;
+};
 
 class ProgressWorker : public Napi::AsyncWorker {
  public:
@@ -158,15 +177,27 @@ class ProgressWorker : public Napi::AsyncWorker {
 
     void OnOK() override {
         Napi::HandleScope scope(Env());
-        Napi::Object res = Napi::Array::New(Env(), result.size());
-        for (uint64_t i = 0; i < result.size(); ++i) {
+
+        if (params.detect_language) {
+            Napi::Object resultObj = Napi::Object::New(Env());
+            resultObj.Set("language", Napi::String::New(Env(), result.language));
+            Callback().Call({Env().Null(), resultObj});
+        }
+
+        Napi::Object returnObj = Napi::Object::New(Env());
+        if (!result.language.empty()) {
+            returnObj.Set("language", Napi::String::New(Env(), result.language));
+        }
+        Napi::Array transcriptionArray = Napi::Array::New(Env(), result.segments.size());
+        for (uint64_t i = 0; i < result.segments.size(); ++i) {
             Napi::Object tmp = Napi::Array::New(Env(), 3);
             for (uint64_t j = 0; j < 3; ++j) {
-                tmp[j] = Napi::String::New(Env(), result[i][j]);
+                tmp[j] = Napi::String::New(Env(), result.segments[i][j]);
             }
-            res[i] = tmp;
-        }
-        Callback().Call({Env().Null(), res});
+            transcriptionArray[i] = tmp;
+         }
+         returnObj.Set("transcription", transcriptionArray);
+         Callback().Call({Env().Null(), returnObj});
     }
 
     // Progress callback function - using thread-safe function
@@ -176,19 +207,19 @@ class ProgressWorker : public Napi::AsyncWorker {
             auto callback = [progress](Napi::Env env, Napi::Function jsCallback) {
                 jsCallback.Call({Napi::Number::New(env, progress)});
             };
-            
+
             tsfn.BlockingCall(callback);
         }
     }
 
  private:
     whisper_params params;
-    std::vector<std::vector<std::string>> result;
+    whisper_result result;
     Napi::Env env;
     Napi::ThreadSafeFunction tsfn;
 
     // Custom run function with progress callback support
-    int run_with_progress(whisper_params &params, std::vector<std::vector<std::string>> &result) {
+    int run_with_progress(whisper_params &params, whisper_result & result) {
         if (params.no_prints) {
             whisper_log_set(cb_log_disable, NULL);
         }
@@ -277,7 +308,8 @@ class ProgressWorker : public Napi::AsyncWorker {
                 wparams.print_timestamps = !params.no_timestamps;
                 wparams.print_special    = params.print_special;
                 wparams.translate        = params.translate;
-                wparams.language         = params.language.c_str();
+                wparams.language         = params.detect_language ? "auto" : params.language.c_str();
+                wparams.detect_language  = params.detect_language;
                 wparams.n_threads        = params.n_threads;
                 wparams.n_max_text_ctx   = params.max_context >= 0 ? params.max_context : wparams.n_max_text_ctx;
                 wparams.offset_ms        = params.offset_t_ms;
@@ -312,34 +344,38 @@ class ProgressWorker : public Napi::AsyncWorker {
                 };
                 wparams.progress_callback_user_data = this;
 
-                // Abort mechanism example
-                {
-                    static bool is_aborted = false; // Note: this should be atomic to avoid data races
+                // Set VAD parameters
+                wparams.vad            = params.vad;
+                wparams.vad_model_path = params.vad_model.c_str();
 
-                    wparams.encoder_begin_callback = [](struct whisper_context * /*ctx*/, struct whisper_state * /*state*/, void * user_data) {
-                        bool is_aborted = *(bool*)user_data;
-                        return !is_aborted;
-                    };
-                    wparams.encoder_begin_callback_user_data = &is_aborted;
-                }
+                wparams.vad_params.threshold               = params.vad_threshold;
+                wparams.vad_params.min_speech_duration_ms  = params.vad_min_speech_duration_ms;
+                wparams.vad_params.min_silence_duration_ms = params.vad_min_silence_duration_ms;
+                wparams.vad_params.max_speech_duration_s   = params.vad_max_speech_duration_s;
+                wparams.vad_params.speech_pad_ms           = params.vad_speech_pad_ms;
+                wparams.vad_params.samples_overlap         = params.vad_samples_overlap;
 
                 if (whisper_full_parallel(ctx, wparams, pcmf32.data(), pcmf32.size(), params.n_processors) != 0) {
                     fprintf(stderr, "failed to process audio\n");
                     return 10;
                 }
             }
-    }
+        }
 
+        if (params.detect_language || params.language == "auto") {
+            result.language = whisper_lang_str(whisper_full_lang_id(ctx));
+        }
         const int n_segments = whisper_full_n_segments(ctx);
-        result.resize(n_segments);
+        result.segments.resize(n_segments);
+
         for (int i = 0; i < n_segments; ++i) {
             const char * text = whisper_full_get_segment_text(ctx, i);
             const int64_t t0 = whisper_full_get_segment_t0(ctx, i);
             const int64_t t1 = whisper_full_get_segment_t1(ctx, i);
 
-            result[i].emplace_back(to_timestamp(t0, params.comma_in_time));
-            result[i].emplace_back(to_timestamp(t1, params.comma_in_time));
-            result[i].emplace_back(text);
+            result.segments[i].emplace_back(to_timestamp(t0, params.comma_in_time));
+            result.segments[i].emplace_back(to_timestamp(t1, params.comma_in_time));
+            result.segments[i].emplace_back(text);
         }
 
         whisper_print_timings(ctx);
@@ -360,35 +396,109 @@ Napi::Value whisper(const Napi::CallbackInfo& info) {
   std::string language = whisper_params.Get("language").As<Napi::String>();
   std::string model = whisper_params.Get("model").As<Napi::String>();
   std::string input = whisper_params.Get("fname_inp").As<Napi::String>();
-  bool use_gpu = whisper_params.Get("use_gpu").As<Napi::Boolean>();
-  bool flash_attn = whisper_params.Get("flash_attn").As<Napi::Boolean>();
-  bool no_prints = whisper_params.Get("no_prints").As<Napi::Boolean>();
-  bool no_timestamps = whisper_params.Get("no_timestamps").As<Napi::Boolean>();
-  int32_t audio_ctx = whisper_params.Get("audio_ctx").As<Napi::Number>();
-  bool comma_in_time = whisper_params.Get("comma_in_time").As<Napi::Boolean>();
-  int32_t max_len = whisper_params.Get("max_len").As<Napi::Number>();
-  
+
+  bool use_gpu = true;
+  if (whisper_params.Has("use_gpu") && whisper_params.Get("use_gpu").IsBoolean()) {
+    use_gpu = whisper_params.Get("use_gpu").As<Napi::Boolean>();
+  }
+
+  bool flash_attn = false;
+  if (whisper_params.Has("flash_attn") && whisper_params.Get("flash_attn").IsBoolean()) {
+    flash_attn = whisper_params.Get("flash_attn").As<Napi::Boolean>();
+  }
+
+  bool no_prints = false;
+  if (whisper_params.Has("no_prints") && whisper_params.Get("no_prints").IsBoolean()) {
+    no_prints = whisper_params.Get("no_prints").As<Napi::Boolean>();
+  }
+
+  bool no_timestamps = false;
+  if (whisper_params.Has("no_timestamps") && whisper_params.Get("no_timestamps").IsBoolean()) {
+    no_timestamps = whisper_params.Get("no_timestamps").As<Napi::Boolean>();
+  }
+
+  bool detect_language = false;
+  if (whisper_params.Has("detect_language") && whisper_params.Get("detect_language").IsBoolean()) {
+    detect_language = whisper_params.Get("detect_language").As<Napi::Boolean>();
+  }
+
+  int32_t audio_ctx = 0;
+  if (whisper_params.Has("audio_ctx") && whisper_params.Get("audio_ctx").IsNumber()) {
+    audio_ctx = whisper_params.Get("audio_ctx").As<Napi::Number>();
+  }
+
+  bool comma_in_time = true;
+  if (whisper_params.Has("comma_in_time") && whisper_params.Get("comma_in_time").IsBoolean()) {
+    comma_in_time = whisper_params.Get("comma_in_time").As<Napi::Boolean>();
+  }
+
+  int32_t max_len = 0;
+  if (whisper_params.Has("max_len") && whisper_params.Get("max_len").IsNumber()) {
+    max_len = whisper_params.Get("max_len").As<Napi::Number>();
+  }
+
   // Add support for max_context
   int32_t max_context = -1;
   if (whisper_params.Has("max_context") && whisper_params.Get("max_context").IsNumber()) {
     max_context = whisper_params.Get("max_context").As<Napi::Number>();
   }
-  
+
   // support prompt
   std::string prompt = "";
   if (whisper_params.Has("prompt") && whisper_params.Get("prompt").IsString()) {
     prompt = whisper_params.Get("prompt").As<Napi::String>();
   }
-  
+
   // Add support for print_progress
   bool print_progress = false;
-  if (whisper_params.Has("print_progress")) {
+  if (whisper_params.Has("print_progress") && whisper_params.Get("print_progress").IsBoolean()) {
     print_progress = whisper_params.Get("print_progress").As<Napi::Boolean>();
   }
   // Add support for progress_callback
   Napi::Function progress_callback;
   if (whisper_params.Has("progress_callback") && whisper_params.Get("progress_callback").IsFunction()) {
     progress_callback = whisper_params.Get("progress_callback").As<Napi::Function>();
+  }
+
+  // Add support for VAD parameters
+  bool vad = false;
+  if (whisper_params.Has("vad") && whisper_params.Get("vad").IsBoolean()) {
+    vad = whisper_params.Get("vad").As<Napi::Boolean>();
+  }
+
+  std::string vad_model = "";
+  if (whisper_params.Has("vad_model") && whisper_params.Get("vad_model").IsString()) {
+    vad_model = whisper_params.Get("vad_model").As<Napi::String>();
+  }
+
+  float vad_threshold = 0.5f;
+  if (whisper_params.Has("vad_threshold") && whisper_params.Get("vad_threshold").IsNumber()) {
+    vad_threshold = whisper_params.Get("vad_threshold").As<Napi::Number>();
+  }
+
+  int vad_min_speech_duration_ms = 250;
+  if (whisper_params.Has("vad_min_speech_duration_ms") && whisper_params.Get("vad_min_speech_duration_ms").IsNumber()) {
+    vad_min_speech_duration_ms = whisper_params.Get("vad_min_speech_duration_ms").As<Napi::Number>();
+  }
+
+  int vad_min_silence_duration_ms = 100;
+  if (whisper_params.Has("vad_min_silence_duration_ms") && whisper_params.Get("vad_min_silence_duration_ms").IsNumber()) {
+    vad_min_silence_duration_ms = whisper_params.Get("vad_min_silence_duration_ms").As<Napi::Number>();
+  }
+
+  float vad_max_speech_duration_s = FLT_MAX;
+  if (whisper_params.Has("vad_max_speech_duration_s") && whisper_params.Get("vad_max_speech_duration_s").IsNumber()) {
+    vad_max_speech_duration_s = whisper_params.Get("vad_max_speech_duration_s").As<Napi::Number>();
+  }
+
+  int vad_speech_pad_ms = 30;
+  if (whisper_params.Has("vad_speech_pad_ms") && whisper_params.Get("vad_speech_pad_ms").IsNumber()) {
+    vad_speech_pad_ms = whisper_params.Get("vad_speech_pad_ms").As<Napi::Number>();
+  }
+
+  float vad_samples_overlap = 0.1f;
+  if (whisper_params.Has("vad_samples_overlap") && whisper_params.Get("vad_samples_overlap").IsNumber()) {
+    vad_samples_overlap = whisper_params.Get("vad_samples_overlap").As<Napi::Number>();
   }
 
   Napi::Value pcmf32Value = whisper_params.Get("pcmf32");
@@ -416,6 +526,17 @@ Napi::Value whisper(const Napi::CallbackInfo& info) {
   params.max_context = max_context;
   params.print_progress = print_progress;
   params.prompt = prompt;
+  params.detect_language = detect_language;
+
+  // Set VAD parameters
+  params.vad = vad;
+  params.vad_model = vad_model;
+  params.vad_threshold = vad_threshold;
+  params.vad_min_speech_duration_ms = vad_min_speech_duration_ms;
+  params.vad_min_silence_duration_ms = vad_min_silence_duration_ms;
+  params.vad_max_speech_duration_s = vad_max_speech_duration_s;
+  params.vad_speech_pad_ms = vad_speech_pad_ms;
+  params.vad_samples_overlap = vad_samples_overlap;
 
   Napi::Function callback = info[1].As<Napi::Function>();
   // Create a new Worker class with progress callback support

@@ -1,7 +1,7 @@
 #version 450
 
-#include "generic_head.comp"
-#include "types.comp"
+#include "generic_head.glsl"
+#include "types.glsl"
 
 #extension GL_EXT_control_flow_attributes : enable
 
@@ -16,5 +16,5 @@ void main() {
     if (i >= p.KX) {
         return;
     }
-    data_d[i] = D_TYPE(1. - 2. / (exp(2.*data_a[i]) + 1.));
+    data_d[i] = D_TYPE(1. - 2. / (exp(2.*float(data_a[i])) + 1.));
 }

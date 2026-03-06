@@ -58,6 +58,7 @@ if (WHISPER_COREML)
     set(TARGET whisper.coreml)
 
     add_library(${TARGET}
+        coreml/whisper-compat.m
         coreml/whisper-encoder.h
         coreml/whisper-encoder.mm
         coreml/whisper-encoder-impl.h
@@ -76,7 +77,9 @@ if (WHISPER_COREML)
         COMPILE_FLAGS "-fobjc-arc"
         XCODE_ATTRIBUTE_CLANG_ENABLE_OBJC_ARC YES
         )
+
     set_target_properties(${TARGET} PROPERTIES FOLDER "libs")
+    install(TARGETS ${TARGET} LIBRARY)
 endif()
 
 if (WHISPER_OPENVINO)
@@ -123,7 +126,8 @@ if (WHISPER_EXTRA_FLAGS)
     target_compile_options(whisper PRIVATE ${WHISPER_EXTRA_FLAGS})
 endif()
 
-target_link_libraries(whisper PUBLIC ggml)
+find_package(Threads REQUIRED)
+target_link_libraries(whisper PUBLIC ggml Threads::Threads)
 
 if (WHISPER_COREML)
     target_link_libraries(whisper PRIVATE whisper.coreml)

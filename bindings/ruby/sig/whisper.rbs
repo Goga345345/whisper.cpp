@@ -7,35 +7,53 @@ module Whisper
   type log_callback = ^(Integer level, String message, Object user_data) -> void
   type new_segment_callback = ^(Whisper::Context, void, Integer n_new, Object user_data) -> void
   type progress_callback = ^(Whisper::Context, void, Integer progress, Object user_data) -> void
+  type encoder_begin_callback = ^(Whisper::Context, void, Object user_data) -> void
   type abort_callback = ^(Whisper::Context, void, Object user_data) -> boolish
 
+  VERSION: String
   LOG_LEVEL_NONE: Integer
   LOG_LEVEL_INFO: Integer
   LOG_LEVEL_WARN: Integer
   LOG_LEVEL_ERROR: Integer
   LOG_LEVEL_DEBUG: Integer
   LOG_LEVEL_CONT: Integer
+  AHEADS_NONE: Integer
+  AHEADS_N_TOP_MOST: Integer
+  AHEADS_CUSTOM: Integer
+  AHEADS_TINY_EN: Integer
+  AHEADS_TINY: Integer
+  AHEADS_BASE_EN: Integer
+  AHEADS_BASE: Integer
+  AHEADS_SMALL_EN: Integer
+  AHEADS_SMALL: Integer
+  AHEADS_MEDIUM_EN: Integer
+  AHEADS_MEDIUM: Integer
+  AHEADS_LARGE_V1: Integer
+  AHEADS_LARGE_V2: Integer
+  AHEADS_LARGE_V3: Integer
+  AHEADS_LARGE_V3_TURBO: Integer
 
   def self.lang_max_id: () -> Integer
   def self.lang_id: (string name) -> Integer
   def self.lang_str: (Integer id) -> String
   def self.lang_str_full: (Integer id) -> String
   def self.log_set: (log_callback, Object? user_data) -> log_callback
+  def self.system_info_str: () -> String
 
   class Context
-    def self.new: (path | ::URI::HTTP) -> instance
+    def self.new: (String | path | ::URI::HTTP) -> instance
 
     # transcribe a single file
     # can emit to a block results
     #
-    #   params = Whisper::Params.new
-    #   params.duration = 60_000
-    #   whisper.transcribe "path/to/audio.wav", params do |text|
-    #     puts text
-    #   end
+    #     params = Whisper::Params.new
+    #     params.duration = 60_000
+    #     whisper.transcribe "path/to/audio.wav", params do |text|
+    #       puts text
+    #     end
     #
-    def transcribe: (string, Params) -> self
-                  | (string, Params) { (String) -> void } -> self
+    def transcribe: (path, Params, ?n_processors: Integer) -> self
+                  | (path, Params, ?n_processors: Integer) { (String) -> void } -> self
 
     def model_n_vocab: () -> Integer
     def model_n_audio_ctx: () -> Integer
@@ -48,16 +66,16 @@ module Whisper
 
     # Yields each Whisper::Segment:
     #
-    #   whisper.transcribe("path/to/audio.wav", params)
-    #   whisper.each_segment do |segment|
-    #     puts segment.text
-    #   end
+    #     whisper.transcribe("path/to/audio.wav", params)
+    #     whisper.each_segment do |segment|
+    #       puts segment.text
+    #     end
     #
     # Returns an Enumerator if no block given:
     #
-    #   whisper.transcribe("path/to/audio.wav", params)
-    #   enum = whisper.each_segment
-    #   enum.to_a # => [#<Whisper::Segment>, ...]
+    #     whisper.transcribe("path/to/audio.wav", params)
+    #     enum = whisper.each_segment
+    #     enum.to_a # => [#<Whisper::Segment>, ...]
     #
     def each_segment: { (Segment) -> void } -> void
                     | () -> Enumerator[Segment]
@@ -72,25 +90,25 @@ module Whisper
 
     # Start time of a segment indexed by +segment_index+ in centiseconds (10 times milliseconds).
     #
-    #   full_get_segment_t0(3) # => 1668 (16680 ms)
+    #     full_get_segment_t0(3) # => 1668 (16680 ms)
     #
     def full_get_segment_t0: (Integer) -> Integer
 
     # End time of a segment indexed by +segment_index+ in centiseconds (10 times milliseconds).
     #
-    #   full_get_segment_t1(3) # => 1668 (16680 ms)
+    #     full_get_segment_t1(3) # => 1668 (16680 ms)
     #
     def full_get_segment_t1: (Integer) -> Integer
 
     # Whether the next segment indexed by +segment_index+ is predicated as a speaker turn.
     #
-    #   full_get_segment_speacker_turn_next(3) # => true
+    #     full_get_segment_speacker_turn_next(3) # => true
     #
     def full_get_segment_speaker_turn_next: (Integer) -> (true | false)
 
     # Text of a segment indexed by +segment_index+.
     #
-    #   full_get_segment_text(3) # => "ask not what your country can do for you, ..."
+    #     full_get_segment_text(3) # => "ask not what your country can do for you, ..."
     #
     def full_get_segment_text: (Integer) -> String
 
@@ -114,6 +132,33 @@ module Whisper
     def full_parallel: (Params, Array[Float], ?Integer n_samples) -> self
                      | (Params, _Samples, ?Integer n_samples) -> self
                      | (Params, _Samples, ?Integer? n_samples, Integer n_processors) -> self
+
+    def to_srt: () -> String
+    def to_webvtt: () -> String
+
+    class Params
+      def self.new: (
+        use_gpu: boolish,
+        flash_attn: boolish,
+        gpu_device: Integer,
+        dtw_token_timestamps: boolish,
+        dtw_aheads_preset: Integer,
+        dtw_n_top: Integer | nil,
+      ) -> instance
+
+      def use_gpu=: (boolish) -> boolish
+      def use_gpu: () -> (true | false)
+      def flash_attn=: (boolish) -> boolish
+      def flash_attn: () -> (true | false)
+      def gpu_device=: (Integer) -> Integer
+      def gpu_device: () -> Integer
+      def dtw_token_timestamps=: (boolish) -> boolish
+      def dtw_token_timestamps: () -> (true | false)
+      def dtw_aheads_preset=: (Integer) -> Integer
+      def dtw_aheads_preset: () -> Integer
+      def dtw_n_top=: (Integer | nil) -> (Integer | nil)
+      def dtw_n_top: () -> (Integer | nil)
+    end
   end
 
   class Params
@@ -129,8 +174,10 @@ module Whisper
       ?suppress_blank: boolish,
       ?suppress_nst: boolish,
       ?token_timestamps: boolish,
+      ?max_len: Integer,
       ?split_on_word: boolish,
       ?initial_prompt: string | nil,
+      ?carry_initial_prompt: boolish,
       ?diarize: boolish,
       ?offset: Integer,
       ?duration: Integer,
@@ -146,8 +193,13 @@ module Whisper
       ?new_segment_callback_user_data: Object,
       ?progress_callback: progress_callback,
       ?progress_callback_user_data: Object,
+      ?encoder_begin_callback: encoder_begin_callback,
+      ?encoder_begin_callback_user_data: Object,
       ?abort_callback: abort_callback,
-      ?abort_callback_user_data: Object
+      ?abort_callback_user_data: Object,
+      ?vad: boolish,
+      ?vad_model_path: path | URI,
+      ?vad_params: Whisper::VAD::Params
     ) -> instance
 
     # params.language = "auto" | "en", etc...
@@ -211,6 +263,12 @@ module Whisper
     #
     def token_timestamps: () -> (true | false)
 
+    def max_len=: (Integer) -> Integer
+
+    # max segment length in characters.
+    #
+    def max_len: () -> Integer
+
     def split_on_word=: (boolish) -> boolish
 
     # If true, split on word rather than on token (when used with max_len).
@@ -218,6 +276,7 @@ module Whisper
     def split_on_word: () -> (true | false)
 
     def initial_prompt=: (_ToS) -> _ToS
+    def carry_initial_prompt=: (boolish) -> boolish
 
     # Tokens to provide to the whisper decoder as initial prompt
     # these are prepended to any existing text context from a previous call
@@ -225,6 +284,7 @@ module Whisper
     # Maximum of whisper_n_text_ctx()/2 tokens are used (typically 224).
     #
     def initial_prompt: () -> (String | nil)
+    def carry_initial_prompt: () -> (true | false)
 
     def diarize=: (boolish) -> boolish
 
@@ -275,9 +335,9 @@ module Whisper
 
     # Sets new segment callback, called for every newly generated text segment.
     #
-    #   params.new_segment_callback = ->(context, _, n_new, user_data) {
-    #     # ...
-    #   }
+    #     params.new_segment_callback = ->(context, _, n_new, user_data) {
+    #       # ...
+    #     }
     #
     def new_segment_callback=: (new_segment_callback) -> new_segment_callback
     def new_segment_callback: () -> (new_segment_callback | nil)
@@ -290,9 +350,9 @@ module Whisper
 
     # Sets progress callback, called on each progress update.
     #
-    #   params.new_segment_callback = ->(context, _, progress, user_data) {
-    #     # ...
-    #   }
+    #     params.new_segment_callback = ->(context, _, progress, user_data) {
+    #       # ...
+    #     }
     #
     # +progress+ is an Integer between 0 and 100.
     #
@@ -306,11 +366,23 @@ module Whisper
 
     def progress_callback_user_data: () -> Object
 
+    # Sets encoder begin callback, called when the encoder starts.
+    #
+    def encoder_begin_callback=: (encoder_begin_callback) -> encoder_begin_callback
+
+    def encoder_begin_callback: () -> (encoder_begin_callback | nil)
+
+    # Sets user data passed to the last argument of encoder begin callback.
+    #
+    def encoder_begin_callback_user_data=: (Object) -> Object
+
+    def encoder_begin_callback_user_data: () -> Object
+
     # Sets abort callback, called to check if the process should be aborted.
     #
-    #   params.abort_callback = ->(user_data) {
-    #     # ...
-    #   }
+    #     params.abort_callback = ->(user_data) {
+    #       # ...
+    #     }
     #
     #
     def abort_callback=: (abort_callback) -> abort_callback
@@ -323,11 +395,25 @@ module Whisper
 
     def abort_callback_user_data: () -> Object
 
+    # Enable VAD
+    #
+    def vad=: (boolish) -> boolish
+
+    def vad: () -> (true | false)
+
+    # Path to the VAD model
+    def vad_model_path=: (path | URI | nil) -> (path | URI | nil)
+
+    def vad_model_path: () -> (String | nil)
+
+    def vad_params=: (Whisper::VAD::Params) -> Whisper::VAD::Params
+    def vad_params: () -> (Whisper::VAD::Params)
+
     # Hook called on new segment. Yields each Whisper::Segment.
     #
-    #   whisper.on_new_segment do |segment|
-    #     # ...
-    #   end
+    #     whisper.on_new_segment do |segment|
+    #       # ...
+    #     end
     #
     def on_new_segment: { (Segment) -> void } -> void
 
@@ -335,21 +421,26 @@ module Whisper
     #
     def on_progress: { (Integer progress) -> void } -> void
 
+    # Hook called on encoder starts.
+    #
+    def on_encoder_begin: { () -> void } -> void
+
     # Call block to determine whether abort or not. Return +true+ when you want to abort.
     #
-    #   params.abort_on do
-    #     if some_condition
-    #       true # abort
-    #     else
-    #       false # continue
+    #     params.abort_on do
+    #       if some_condition
+    #         true # abort
+    #       else
+    #         false # continue
+    #       end
     #     end
-    #   end
     #
     def abort_on: { (Object user_data) -> boolish } -> void
   end
 
   class Model
     def self.pre_converted_models: () -> Hash[String, Model::URI]
+    def self.coreml_compiled_models: () -> Hash[Model::URI, Model::ZipURI]
     def self.new: () -> instance
     def n_vocab: () -> Integer
     def n_audio_ctx: () -> Integer
@@ -369,9 +460,23 @@ module Whisper
       def to_path: -> String
       def clear_cache: -> void
     end
+
+    class ZipURI < URI
+      def cache: () -> Pathname
+      def clear_cache: () -> void
+    end
   end
 
   class Segment
+    type deconstructed_keys = {
+      start_time: (Integer | nil),
+      end_time: (Integer | nil),
+      text: (String | nil),
+      no_speech_prob: (Float | nil),
+      speaker_turn_next: (true | false | nil),
+      n_tokens: (Integer | nil)
+    }
+
     # Start time in milliseconds.
     #
     def start_time: () -> Integer
@@ -381,10 +486,185 @@ module Whisper
     def end_time: () -> Integer
 
     # Whether the next segment is predicted as a speaker turn.
-    def speaker_next_turn?: () -> (true | false)
+    #
+    def speaker_turn_next?: () -> (true | false)
 
     def text: () -> String
     def no_speech_prob: () -> Float
+
+    # Get number of tokens in the segment
+    #
+    def n_tokens: () -> Integer
+
+    # Yields each Whisper::Token:
+    #
+    #   whisper.each_segment.first.each_token do |token|
+    #     p token
+    #   end
+    #
+    # Returns an Enumerator if no block is given:
+    #
+    #   whisper.each_segment.first.each_token.to_a # => [#<Whisper::Token>, ...]
+    #
+    def each_token: { (Token) -> void } -> void
+                  | () -> Enumerator[Token]
+    def to_srt_cue: () -> String
+    def to_webvtt_cue: () -> String
+
+
+    #  Possible keys: :start_time, :end_time, :text, :no_speech_prob, :speaker_turn_next
+    #
+    #      whisper.each_segment do |segment|
+    #        segment => {start_time:, end_time:, text:, no_speech_prob:, speaker_turn_next:}
+    #
+    #        puts "[#{start_time} --> #{end_time}] #{text} (no speech prob: #{no_speech_prob}#{speaker_turn_next ? ', speaker turns next' : ''})"
+    #      end
+    def deconstruct_keys: (Array[:start_time | :end_time | :text | :no_speech_prob | :speaker_turn_next | :n_tokens] | nil) -> deconstructed_keys
+  end
+
+  module Token
+    type deconstructed_keys = {
+      id: (Integer | nil),
+      tid: (Integer | nil),
+      probability: (Float | nil),
+      log_probability: (Float | nil),
+      pt: (Float | nil),
+      ptsum: (Float | nil),
+      t_dtw: (Integer | nil),
+      voice_length: (Float | nil),
+      text: (String | nil),
+      start_time: (Integer | nil),
+      end_time: (Integer | nil),
+    }
+
+    # Token ID.
+    #
+    def id: () -> Integer
+
+    # Forced timestamp token ID.
+    #
+    def tid: () -> Integer
+
+    # Probability of the token.
+    #
+    def probability: () -> Float
+
+    # Log probability of the token.
+    #
+    def log_probability: () -> Float
+
+    # Probability of the timestamp token.
+    #
+    def pt: () -> Float
+
+    # Sum of probability of all timestamp tokens.
+    #
+    def ptsum: () -> Float
+
+    # [EXPERIMENTAL] Token-level timestamps with DTW
+    #
+    # Do not use if you haven't computed token-level timestamps with dtw.
+    # Roughly corresponds to the moment in audio in which the token was output.
+    #
+    def t_dtw: () -> Integer
+
+    # Voice length of the token.
+    #
+    def voice_length: () -> Float
+
+    # Start time of the token.
+    #
+    # Token-level timestamp data.
+    # Do not use if you haven't computed token-level timestamps.
+    #
+    def start_time: () -> Integer
+
+    # End time of the token.
+    #
+    # Token-level timestamp data.
+    # Do not use if you haven't computed token-level timestamps.
+    #
+    def end_time: () -> Integer
+
+    # Get the token text of the token.
+    #
+    def text: () -> String
+    def deconstruct_keys: (Array[:id | :tid | :probability | :log_probability | :pt | :ptsum | :t_dtw | :voice_length | :start_time | :end_time | :text] | nil) -> deconstructed_keys
+  end
+
+  module VAD
+    class Params
+      def self.new: (
+        ?threshold: Float,
+        ?min_speech_duration_ms: Integer,
+        ?min_silence_duration_ms: Integer,
+        ?max_speech_duration_s: Float,
+        ?speech_pad_ms: Integer,
+        ?samples_overlap: Float
+      ) -> instance
+
+      # Probability threshold to consider as speech.
+      #
+      def threshold=: (Float) -> Float
+
+      def threshold: () -> Float
+
+      # Min duration for a valid speech segment.
+      #
+      def min_speech_duration_ms=: (Integer) -> Integer
+
+      def min_speech_duration_ms: () -> Integer
+
+      # Min silence duration to consider speech as ended.
+      #
+      def min_silence_duration_ms=: (Integer) -> Integer
+
+      def min_silence_duration_ms: () -> Integer
+
+      # Max duration of a speech segment before forcing a new segment.
+      def max_speech_duration_s=: (Float) -> Float
+
+      def max_speech_duration_s: () -> Float
+
+      # Padding added before and after speech segments.
+      #
+      def speech_pad_ms=: (Integer) -> Integer
+
+      def speech_pad_ms: () -> Integer
+
+      # Overlap in seconds when copying audio samples from speech segment.
+      #
+      def samples_overlap=: (Float) -> Float
+
+      def samples_overlap: () -> Float
+      def ==: (Params) -> (true | false)
+    end
+
+    class Context
+      def self.new: (String | path | ::URI::HTTP model_name_or_path) -> instance
+      def segments_from_samples: (Params, Array[Float] samples, ?Integer n_samples) -> Segments
+                               | (Params, _Samples, ?Integer n_samples) -> Segments
+      def detect: (path wav_file_path, Params) -> Segments
+    end
+
+    class Segments
+      include Enumerable[Segment]
+
+      def each: { (Segment) -> void } -> void
+              | () -> Enumerator[Segment]
+      def length: -> Integer
+    end
+
+    class Segment
+      type deconstructed_keys = {
+        start_time: (Integer | nil),
+        end_time: (Integer | nil),
+      }
+
+      def start_time: () -> Integer
+      def end_time: () -> Integer
+      def deconstruct_keys: (Array[:start_time | :end_time] | nil) -> deconstructed_keys
+    end
   end
 
   class Error < StandardError
